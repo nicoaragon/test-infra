@@ -27,6 +27,9 @@ import (
 	"k8s.io/test-infra/prow/github"
 	"k8s.io/test-infra/prow/pluginhelp"
 	"k8s.io/test-infra/prow/plugins"
+
+	"labelparser"
+	"github.com/antlr/antlr4/runtime/Go/antlr"
 )
 
 const pluginName = "label"
@@ -37,7 +40,64 @@ var (
 	removeLabelRegex       = regexp.MustCompile(`(?m)^/remove-(area|committee|kind|language|priority|sig|triage|wg)\s*(.*)$`)
 	customLabelRegex       = regexp.MustCompile(`(?m)^/label\s*(.*)$`)
 	customRemoveLabelRegex = regexp.MustCompile(`(?m)^/remove-label\s*(.*)$`)
+	org string
+	repo string
+	eventNumber int
 )
+
+type labelData struct {
+	LabelName string
+	LabelType string
+	RemoveLabel bool
+}
+
+type labelCommandListener struct {
+	*parser.BaseLabelCommandListener
+	name string
+	operation string
+	labels []labelData
+}
+
+func (ll *labelCommandListener)makeLabel() labelData {
+	operation := strings.ReplaceAll(ll.operation, "remove-", "")
+	labelName := ll.name
+	if operation != "label" {
+		labelName = strings.TrimSpace(operation) + "/" + labelName
+	}
+	label := labelData{LabelName: labelName}
+	label.LabelType = operation
+	label.RemoveLabel = operation != ll.operation
+	ll.operation = ""
+	ll.name = ""
+	return label
+}
+
+func (ll *labelCommandListener)ExitName(c *parser.NameContext) {
+	ll.name = strings.TrimSpace(c.GetText())
+}
+
+func (ll *labelCommandListener)ExitAddLabel(c *parser.AddLabelContext) {
+	operation := c.GetOp()
+	ll.operation = strings.TrimSpace(operation.GetText())
+	ll.labels = append(ll.labels, ll.makeLabel())
+}
+
+func (ll *labelCommandListener)ExitRemoveLabel(c *parser.RemoveLabelContext) {
+	operation := c.GetOp()
+	ll.operation = strings.TrimSpace(operation.GetText())
+	ll.labels = append(ll.labels, ll.makeLabel())
+}
+
+func parse(eventBody string) []labelData {
+	is:= antlr.NewInputStream(eventBody)
+	lexer:= parser.NewLabelCommandLexer(is)
+	stream:= antlr.NewCommonTokenStream(lexer, antlr.TokenDefaultChannel)
+	p:= parser.NewLabelCommandParser(stream)
+	listener := labelCommandListener{}
+	listener.labels = make([]labelData,0)
+	antlr.ParseTreeWalkerDefault.Walk(&listener,p.Start())
+	return listener.labels
+}
 
 func init() {
 	plugins.RegisterGenericCommentHandler(pluginName, handleGenericComment, helpProvider)
@@ -119,30 +179,48 @@ func getLabelsFromGenericMatches(matches [][]string, additionalLabels []string, 
 	return labels
 }
 
+func loadRepoLabels(gc githubClient) (error, sets.String){
+	existingRepoLabels := sets.String{}
+	repoLabels, err := gc.GetRepoLabels(org, repo)
+	if err != nil {
+		return err, nil
+	}
+	
+	for _, l := range repoLabels {
+		existingRepoLabels.Insert(strings.ToLower(l.Name))
+	}
+	return nil, existingRepoLabels
+}
+
+func filter(labels []labelData, onRemove bool, exclude string) []string{
+	results := make([]string,0)
+	for _, value := range labels {
+		if value.RemoveLabel == onRemove && value.LabelType != exclude {
+			results = append(results, value.LabelName)
+		}
+	}
+	return results
+}
+
 func handle(gc githubClient, log *logrus.Entry, additionalLabels []string, e *github.GenericCommentEvent) error {
-	labelMatches := labelRegex.FindAllStringSubmatch(e.Body, -1)
+	org = e.Repo.Owner.Login
+	repo = e.Repo.Name
+	eventNumber = e.Number
+	parsedLabels := parse(e.Body)
+	labelMatches := filter(parsedLabels, false, "label") //labelRegex.FindAllStringSubmatch(e.Body, -1)
 	removeLabelMatches := removeLabelRegex.FindAllStringSubmatch(e.Body, -1)
 	customLabelMatches := customLabelRegex.FindAllStringSubmatch(e.Body, -1)
 	customRemoveLabelMatches := customRemoveLabelRegex.FindAllStringSubmatch(e.Body, -1)
 	if len(labelMatches) == 0 && len(removeLabelMatches) == 0 && len(customLabelMatches) == 0 && len(customRemoveLabelMatches) == 0 {
 		return nil
 	}
-
-	org := e.Repo.Owner.Login
-	repo := e.Repo.Name
-
-	repoLabels, err := gc.GetRepoLabels(org, repo)
+	labels, err := gc.GetIssueLabels(org, repo, eventNumber)
 	if err != nil {
 		return err
 	}
-	labels, err := gc.GetIssueLabels(org, repo, e.Number)
+	err, RepoLabelsExisting := loadRepoLabels(gc)
 	if err != nil {
 		return err
-	}
-
-	RepoLabelsExisting := sets.String{}
-	for _, l := range repoLabels {
-		RepoLabelsExisting.Insert(strings.ToLower(l.Name))
 	}
 	var (
 		nonexistent         []string
@@ -152,7 +230,7 @@ func handle(gc githubClient, log *logrus.Entry, additionalLabels []string, e *gi
 		labelsToRemove      []string
 	)
 	// Get labels to add and labels to remove from regexp matches
-	labelsToAdd = append(getLabelsFromREMatches(labelMatches), getLabelsFromGenericMatches(customLabelMatches, additionalLabels, &nonexistent)...)
+	labelsToAdd = append(labelMatches, getLabelsFromGenericMatches(customLabelMatches, additionalLabels, &nonexistent)...)
 	labelsToRemove = append(getLabelsFromREMatches(removeLabelMatches), getLabelsFromGenericMatches(customRemoveLabelMatches, additionalLabels, &nonexistent)...)
 	// Add labels
 	for _, labelToAdd := range labelsToAdd {

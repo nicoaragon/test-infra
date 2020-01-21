@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-load("@bazel_tools//tools/build_defs/repo:http.bzl", "http_archive")
+load("@bazel_tools//tools/build_defs/repo:http.bzl", "http_jar", "http_archive")
 load("@bazel_tools//tools/build_defs/repo:git.bzl", "git_repository", "new_git_repository")
 
 def repositories():
@@ -36,6 +36,20 @@ def repositories():
         sha256 = "a34539941fd920432b7c545f720129e2f2e6b2285f1beb66de25e429f91759bf",
         strip_prefix = "rules_k8s-0.3",
         urls = ["https://github.com/bazelbuild/rules_k8s/releases/download/v0.3/rules_k8s-v0.3.tar.gz"],
+    )
+    # get antlr compiler
+    http_jar(
+        name = "antlr_compiler",
+        url = "https://www.antlr.org/download/antlr-4.7.1-complete.jar",
+        sha256 = "f41dce7441d523baf9769cb7756a00f27a4b67e55aacab44525541f62d7f6688",
+    )
+    # get antlr runtime for Go
+    http_archive(
+        name = "antlr_runtime",
+        url = "https://github.com/antlr/antlr4/archive/4.7.2.tar.gz",
+        strip_prefix = "antlr4-4.7.2",
+        build_file = "@io_k8s_test_infra//:antlr_runtime.BUILD",
+        sha256 = "46f5e1af5f4bd28ade55cb632f9a069656b31fc8c2408f9aa045f9b5f5caad64",
     )
 
     # https://github.com/bazelbuild/rules_nodejs

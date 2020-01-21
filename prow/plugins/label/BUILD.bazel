@@ -6,16 +6,42 @@ load(
     "go_test",
 )
 
+load(
+    "@io_bazel_rules_go//go/private:rules/library.bzl",
+    "go_tool_library",
+)
+
+load(
+    "@io_k8s_test_infra//:antlr.bzl",
+    "antlr"
+)
+
+antlr(
+    name = "labelcommand",
+    src = ":LabelCommand.g4",
+)
+
+go_tool_library(
+    name = "labelparser",
+    srcs = [":labelcommand"],
+    deps = ["@antlr_runtime//:antlr_runtime"],
+    importpath = "labelparser",
+    visibility = ["//visibility:public"]
+)
+
 go_test(
     name = "go_default_test",
     srcs = ["label_test.go"],
     embed = [":go_default_library"],
+    importpath = "k8s.io/test-infra/prow/plugins/label",
     deps = [
         "//prow/github:go_default_library",
         "//prow/github/fakegithub:go_default_library",
         "//prow/labels:go_default_library",
         "//prow/plugins:go_default_library",
         "@com_github_sirupsen_logrus//:go_default_library",
+        "@antlr_runtime//:antlr_runtime",
+        ":labelparser",
     ],
 )
 
@@ -29,6 +55,8 @@ go_library(
         "//prow/plugins:go_default_library",
         "@com_github_sirupsen_logrus//:go_default_library",
         "@io_k8s_apimachinery//pkg/util/sets:go_default_library",
+        "@antlr_runtime//:antlr_runtime",
+        ":labelparser",
     ],
 )
 
